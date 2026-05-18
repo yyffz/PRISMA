@@ -1,24 +1,33 @@
-# Satellite Tokenizer Training, Inference, and Evaluation
+# PRISMA
 
-This repository contains the training, inference, and evaluation code for adapting
-NVIDIA Cosmos-Predict1 tokenizers to satellite and precipitation observations.
-It keeps the original Cosmos-Predict1 tokenizer stack and adds satellite-specific
-datasets, model configurations, channel adapters, shell entry points, and
-evaluation utilities.
+![PRISMA framework overview](outputs/fig1_new.png)
 
-The satellite tokenizer fine-tuning and evaluation protocol follows the PRISMA
-study, "A plug-and-play generative framework for multi-satellite precipitation
+PRISMA is the project repository for sharing code related to our study,
+"A plug-and-play generative framework for multi-satellite precipitation
 estimation" (arXiv:2605.14426): https://arxiv.org/abs/2605.14426.
+
+The study introduces a generative, plug-and-play framework for multi-satellite
+precipitation estimation. PRISMA represents heterogeneous satellite observations
+with modality-specific tokenizers and conditional branches, then uses a shared
+DiT backbone to fuse available infrared, microwave, and precipitation-related
+inputs for precipitation reconstruction and estimation. This design supports
+different satellite sensors and missing-observation patterns while keeping the
+core precipitation generation model extensible to new modalities.
+
+This code release currently focuses on satellite tokenizer fine-tuning and
+evaluation. It adapts NVIDIA Cosmos-Predict1 tokenizers to satellite and
+precipitation observations, keeping the original Cosmos-Predict1 tokenizer stack
+while adding satellite-specific datasets, model configurations, channel adapters,
+shell entry points, and evaluation utilities. Additional PRISMA components will
+be released in future updates.
 
 ## Project Overview
 
-The codebase is organized around three main workflows:
+The currently released code is organized around these workflows:
 
 - Satellite tokenizer fine-tuning from Cosmos-Tokenize1 checkpoints.
 - Batch tokenizer inference and reconstruction evaluation for satellite
   observations.
-- Supporting preprocessing and visualization scripts for radar, nowcasting, and
-  satellite data products.
 
 Key files and directories:
 

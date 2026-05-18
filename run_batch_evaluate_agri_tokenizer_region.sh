@@ -1,190 +1,221 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
 
-# Batch inference and evaluation for the AGRI satellite tokenizer.
-# Usage:
-#   bash run_batch_evaluate_agri_tokenizer_region.sh \
-#       --data_pattern 'datasets/AGRI_processed/preprocessed_video/*_agri_video_*.npz' \
-#       --checkpoint checkpoints/satellite_tokenizer/agri/<run>/checkpoints/iter_000240000_ema.jit
+# 在新裁剪区域上批量评估 AGRI 视频 Tokenizer（微调 vs 预训练）
+# 裁剪区域与 prepare_agri_video_tokens 一致：h=[300:1500], w=[2200:3400]，5 时刻 ref±45/30/15/0/15min
+# 数据源：AGRI_processed 根目录下的原始 NPZ（YYYYMMDDHHMM_agri.npz）
+# 使用方法: ./run_batch_evaluate_agri_tokenizer_region.sh [选项]
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+export CUDA_VISIBLE_DEVICES=5
 
-DATA_PATTERN="datasets/AGRI_processed/preprocessed_video/*_agri_video_*.npz"
-CHECKPOINT=""
-CHECKPOINT_ENC=""
-CHECKPOINT_DEC=""
-OUTPUT_DIR="outputs/agri_tokenizer_region_eval"
-REGION=""
-MAX_SAMPLES=""
-CUDA_VISIBLE_DEVICES_DEFAULT="0"
+# 默认参数
+START="2025-07-01"
+END="2025-07-03"
+INPUT_DIR="/public/share/users/sunhaofei/yyf_data/AGRI_processed"
+PRETRAINED_DIR="/public/home/sunhaofei/cosmos-predict1/checkpoints/Cosmos-Tokenize1-CV4x8x8-360p"
+FINETUNED_DIR="/public/home/sunhaofei/cosmos-predict1/checkpoints/satellite_tokenizer/agri/agri_training_2026-02-08_13-37-55/checkpoints"
+FINETUNED_ITER=210000
+OUTPUT_DIR="outputs/evaluation_results_agri_region"
 DEVICE="cuda"
 DTYPE="bfloat16"
-USE_MASK_CHANNEL="true"
-MASK_METRICS="true"
-EVALUATE_MASK_CHANNEL="false"
-SAVE_RECONSTRUCTIONS="false"
-DATA_KEY="agri_data"
-MASK_KEY="observation_mask"
-PYTHON_BIN="python"
-CONDA_ENV_PATH="${CONDA_ENV_PATH:-}"
-CONDA_ENV_NAME="${CONDA_ENV_NAME:-cosmos-predict1}"
+MAX_SAMPLES=""
+STEP_MINUTES=30
+STATS_PATH="/public/home/sunhaofei/yyf/DGPR/channel_stats_agri_15ch.pth"
+MIN_VALID_FRAMES=5
+MIN_VALID_RATIO=0.5
+SAVE_PLOTS=true
+PLOT_SAMPLES=5
+REPORT_BOTH_METRICS=true
 
-print_help() {
-    cat <<'EOF'
-AGRI Tokenizer 区域批量推理与评估脚本
+# Conda 环境
+CONDA_ENV_PATH="/public/home/sunhaofei/anaconda3"
+CONDA_ENV_NAME="cosmos-predict1"
 
-必需参数:
-  --checkpoint PATH             完整 autoencoder JIT，例如 *_ema.jit
-    或同时提供:
-  --checkpoint_enc PATH         encoder JIT，例如 *_enc.jit
-  --checkpoint_dec PATH         decoder JIT，例如 *_dec.jit
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVAL_SCRIPT="${SCRIPT_DIR}/batch_evaluate_agri_tokenizer_region.py"
 
-常用参数:
-  --data_pattern PATTERN        AGRI NPZ glob 或 @filelist.txt
-  --output_dir DIR              评估结果输出目录
-  --region ROW0:ROW1,COL0:COL1  可选像素区域；不填表示全图
-  --max_samples INT             最多评估样本数
-  --cuda_visible_devices STR    可见 GPU ID，默认 0
-  --device STR                  torch device，默认 cuda
-  --dtype STR                   float32|float16|bfloat16，默认 bfloat16
-  --use_mask_channel BOOL       输入是否使用第 10 个 mask 通道，默认 true
-  --mask_metrics BOOL           指标是否只统计 observation_mask=1 区域，默认 true
-  --evaluate_mask_channel BOOL  是否把 mask 通道也纳入指标，默认 false
-  --save_reconstructions BOOL   是否保存重建 NPZ，默认 false
-  --data_key KEY                NPZ 数据键，默认 agri_data
-  --mask_key KEY                NPZ mask 键，默认 observation_mask
-  --python_bin PATH             Python 可执行文件，默认 python
-  --project_root PATH           项目根目录，默认脚本所在目录
-
-示例:
-  bash run_batch_evaluate_agri_tokenizer_region.sh \
-      --data_pattern 'datasets/AGRI_processed/preprocessed_video/*_agri_video_*.npz' \
-      --checkpoint checkpoints/satellite_tokenizer/agri/agri_training_xxx/checkpoints/iter_000240000_ema.jit \
-      --region 0:256,0:256 \
-      --max_samples 100 \
-      --save_reconstructions true
-EOF
-}
-
+# 解析命令行参数
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --data_pattern) DATA_PATTERN="$2"; shift 2 ;;
-        --data_pattern=*) DATA_PATTERN="${1#*=}"; shift ;;
-        --checkpoint) CHECKPOINT="$2"; shift 2 ;;
-        --checkpoint=*) CHECKPOINT="${1#*=}"; shift ;;
-        --checkpoint_enc) CHECKPOINT_ENC="$2"; shift 2 ;;
-        --checkpoint_enc=*) CHECKPOINT_ENC="${1#*=}"; shift ;;
-        --checkpoint_dec) CHECKPOINT_DEC="$2"; shift 2 ;;
-        --checkpoint_dec=*) CHECKPOINT_DEC="${1#*=}"; shift ;;
-        --output_dir) OUTPUT_DIR="$2"; shift 2 ;;
-        --output_dir=*) OUTPUT_DIR="${1#*=}"; shift ;;
-        --region) REGION="$2"; shift 2 ;;
-        --region=*) REGION="${1#*=}"; shift ;;
-        --max_samples) MAX_SAMPLES="$2"; shift 2 ;;
-        --max_samples=*) MAX_SAMPLES="${1#*=}"; shift ;;
-        --cuda_visible_devices) CUDA_VISIBLE_DEVICES_DEFAULT="$2"; shift 2 ;;
-        --cuda_visible_devices=*) CUDA_VISIBLE_DEVICES_DEFAULT="${1#*=}"; shift ;;
-        --device) DEVICE="$2"; shift 2 ;;
-        --device=*) DEVICE="${1#*=}"; shift ;;
-        --dtype) DTYPE="$2"; shift 2 ;;
-        --dtype=*) DTYPE="${1#*=}"; shift ;;
-        --use_mask_channel) USE_MASK_CHANNEL="$2"; shift 2 ;;
-        --use_mask_channel=*) USE_MASK_CHANNEL="${1#*=}"; shift ;;
-        --mask_metrics) MASK_METRICS="$2"; shift 2 ;;
-        --mask_metrics=*) MASK_METRICS="${1#*=}"; shift ;;
-        --evaluate_mask_channel) EVALUATE_MASK_CHANNEL="$2"; shift 2 ;;
-        --evaluate_mask_channel=*) EVALUATE_MASK_CHANNEL="${1#*=}"; shift ;;
-        --save_reconstructions) SAVE_RECONSTRUCTIONS="$2"; shift 2 ;;
-        --save_reconstructions=*) SAVE_RECONSTRUCTIONS="${1#*=}"; shift ;;
-        --data_key) DATA_KEY="$2"; shift 2 ;;
-        --data_key=*) DATA_KEY="${1#*=}"; shift ;;
-        --mask_key) MASK_KEY="$2"; shift 2 ;;
-        --mask_key=*) MASK_KEY="${1#*=}"; shift ;;
-        --python_bin) PYTHON_BIN="$2"; shift 2 ;;
-        --python_bin=*) PYTHON_BIN="${1#*=}"; shift ;;
-        --project_root) PROJECT_ROOT="$2"; shift 2 ;;
-        --project_root=*) PROJECT_ROOT="${1#*=}"; shift ;;
-        -h|--help) print_help; exit 0 ;;
-        *) echo "未知参数: $1"; print_help; exit 1 ;;
+    case $1 in
+        --start)
+            START="$2"
+            shift 2
+            ;;
+        --end)
+            END="$2"
+            shift 2
+            ;;
+        --input_dir)
+            INPUT_DIR="$2"
+            shift 2
+            ;;
+        --pretrained_dir)
+            PRETRAINED_DIR="$2"
+            shift 2
+            ;;
+        --finetuned_dir)
+            FINETUNED_DIR="$2"
+            shift 2
+            ;;
+        --finetuned_iter)
+            FINETUNED_ITER="$2"
+            shift 2
+            ;;
+        --output_dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --device)
+            DEVICE="$2"
+            shift 2
+            ;;
+        --dtype)
+            DTYPE="$2"
+            shift 2
+            ;;
+        --max_samples)
+            MAX_SAMPLES="$2"
+            shift 2
+            ;;
+        --step_minutes)
+            STEP_MINUTES="$2"
+            shift 2
+            ;;
+        --stats_path)
+            STATS_PATH="$2"
+            shift 2
+            ;;
+        --no_mask_channel)
+            NO_MASK_CHANNEL="--no_mask_channel"
+            shift
+            ;;
+        --save_plots)
+            SAVE_PLOTS=true
+            shift
+            ;;
+        --plot_samples)
+            PLOT_SAMPLES="$2"
+            shift 2
+            ;;
+        --min_valid_frames)
+            MIN_VALID_FRAMES="$2"
+            shift 2
+            ;;
+        --min_valid_ratio)
+            MIN_VALID_RATIO="$2"
+            shift 2
+            ;;
+        --report_both_metrics)
+            REPORT_BOTH_METRICS=true
+            shift
+            ;;
+        -h|--help)
+            echo "在新裁剪区域上批量评估 AGRI 视频 Tokenizer"
+            echo ""
+            echo "裁剪区域: h=[300:1500], w=[2200:3400] (1200×1200)"
+            echo "5 个时刻: ref-45min, ref-30min, ref-15min, ref, ref+15min"
+            echo "数据: INPUT_DIR 下 YYYYMMDDHHMM_agri.npz"
+            echo ""
+            echo "用法: $0 [选项]"
+            echo ""
+            echo "可选参数:"
+            echo "  --start DATE             开始时间 (如 2024-07-01)"
+            echo "  --end DATE               结束时间 (如 2024-07-02)"
+            echo "  --input_dir PATH         AGRI_processed 根目录 (默认: .../AGRI_processed)"
+            echo "  --pretrained_dir PATH    预训练模型目录"
+            echo "  --finetuned_dir PATH     微调模型 checkpoint 目录"
+            echo "  --finetuned_iter INT     微调模型迭代次数 (默认: 210000)"
+            echo "  --output_dir PATH        输出目录 (默认: outputs/evaluation_results_agri_region)"
+            echo "  --device DEVICE          计算设备 (默认: cuda)"
+            echo "  --dtype DTYPE            数据类型 (默认: bfloat16)"
+            echo "  --max_samples INT        最大样本数（用于测试）"
+            echo "  --step_minutes INT       参考时间步长分钟 (默认: 15)"
+            echo "  --stats_path PATH        通道统计量 .pth"
+            echo "  --no_mask_channel        微调模型不使用 mask 通道"
+            echo "  --save_plots              对部分样本保存 3 通道对比图"
+            echo "  --plot_samples INT        绘制对比图的样本数 (默认: 5)"
+            echo "  --min_valid_frames INT    5 帧中至少几帧有效才纳入评估 (默认: 2)"
+            echo "  --min_valid_ratio FLOAT   单帧有效比例阈值 (默认: 0.1)"
+            echo "  --report_both_metrics     同时输出「仅有效区」与「全图（含无效区）」指标"
+            echo ""
+            echo "示例:"
+            echo "  $0 --start 2024-07-01 --end 2024-07-03"
+            echo "  $0 --start 2024-07-01 --end 2024-07-02 --max_samples 20"
+            exit 0
+            ;;
+        *)
+            echo "未知参数: $1"
+            echo "使用 --help 查看帮助"
+            exit 1
+            ;;
     esac
 done
 
-if [[ -z "$CHECKPOINT" && ( -z "$CHECKPOINT_ENC" || -z "$CHECKPOINT_DEC" ) ]]; then
-    echo "错误: 需要提供 --checkpoint，或同时提供 --checkpoint_enc 和 --checkpoint_dec"
+# 检查
+if [ ! -d "$INPUT_DIR" ]; then
+    echo "错误: 输入目录不存在: $INPUT_DIR"
+    exit 1
+fi
+if [ ! -d "$PRETRAINED_DIR" ]; then
+    echo "错误: 预训练模型目录不存在: $PRETRAINED_DIR"
+    exit 1
+fi
+if [ ! -d "$FINETUNED_DIR" ]; then
+    echo "错误: 微调模型目录不存在: $FINETUNED_DIR"
+    exit 1
+fi
+if [ ! -f "$EVAL_SCRIPT" ]; then
+    echo "错误: 评估脚本不存在: $EVAL_SCRIPT"
     exit 1
 fi
 
-if [[ -n "$CONDA_ENV_PATH" ]]; then
-    if [[ ! -f "${CONDA_ENV_PATH}/etc/profile.d/conda.sh" ]]; then
-        echo "错误: CONDA_ENV_PATH 无效: $CONDA_ENV_PATH"
-        exit 1
-    fi
-    source "${CONDA_ENV_PATH}/etc/profile.d/conda.sh"
-    conda activate "$CONDA_ENV_NAME"
-fi
-
-cd "$PROJECT_ROOT"
-export CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES_DEFAULT"
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
-
-mkdir -p "$OUTPUT_DIR" logs
-TIMESTAMP="$(date +"%Y%m%d_%H%M%S")"
-LOG_FILE="logs/evaluate_agri_tokenizer_region_${TIMESTAMP}.log"
-
-CMD=(
-    "$PYTHON_BIN" -m cosmos_predict1.tokenizer_satellite.inference.evaluate_agri_tokenizer_region
-    --data_pattern "$DATA_PATTERN"
-    --output_dir "$OUTPUT_DIR"
-    --data_key "$DATA_KEY"
-    --mask_key "$MASK_KEY"
-    --use_mask_channel "$USE_MASK_CHANNEL"
-    --device "$DEVICE"
-    --dtype "$DTYPE"
-)
-
-if [[ -n "$CHECKPOINT" ]]; then
-    CMD+=(--checkpoint "$CHECKPOINT")
-else
-    CMD+=(--checkpoint_enc "$CHECKPOINT_ENC" --checkpoint_dec "$CHECKPOINT_DEC")
-fi
-
-if [[ -n "$REGION" ]]; then
-    CMD+=(--region "$REGION")
-fi
-
-if [[ -n "$MAX_SAMPLES" ]]; then
-    CMD+=(--max_samples "$MAX_SAMPLES")
-fi
-
-case "${MASK_METRICS,,}" in
-    true|1|yes|y) CMD+=(--mask_metrics) ;;
-    false|0|no|n) CMD+=(--no_mask_metrics) ;;
-    *) echo "错误: --mask_metrics 只能是 true/false"; exit 1 ;;
-esac
-
-case "${EVALUATE_MASK_CHANNEL,,}" in
-    true|1|yes|y) CMD+=(--evaluate_mask_channel) ;;
-    false|0|no|n) ;;
-    *) echo "错误: --evaluate_mask_channel 只能是 true/false"; exit 1 ;;
-esac
-
-case "${SAVE_RECONSTRUCTIONS,,}" in
-    true|1|yes|y) CMD+=(--save_reconstructions) ;;
-    false|0|no|n) ;;
-    *) echo "错误: --save_reconstructions 只能是 true/false"; exit 1 ;;
-esac
+mkdir -p "$OUTPUT_DIR"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+LOG_FILE="${OUTPUT_DIR}/batch_evaluation_region_${TIMESTAMP}.log"
 
 echo "=========================================="
-echo "AGRI Tokenizer 区域批量推理与评估"
-echo "项目根目录: $PROJECT_ROOT"
-echo "数据路径: $DATA_PATTERN"
+echo "AGRI Tokenizer 批量评估（新裁剪区域）"
+echo "=========================================="
+echo "裁剪区域: h=[300:1500], w=[2200:3400] (1200×1200)"
+echo "时间范围: $START ~ $END  步长: ${STEP_MINUTES} 分钟"
+echo "输入目录: $INPUT_DIR"
+echo "预训练模型: $PRETRAINED_DIR"
+echo "微调模型: $FINETUNED_DIR  iter=$FINETUNED_ITER"
 echo "输出目录: $OUTPUT_DIR"
-echo "区域: ${REGION:-full}"
-echo "日志文件: $LOG_FILE"
+if [ "$SAVE_PLOTS" = true ]; then
+    echo "保存对比图: 是 (最多 $PLOT_SAMPLES 个样本)"
+fi
+echo "异常样本过滤: 至少 ${MIN_VALID_FRAMES} 帧 valid_ratio >= ${MIN_VALID_RATIO}"
+echo "日志: $LOG_FILE"
 echo "=========================================="
-printf '执行命令:'
-printf ' %q' "${CMD[@]}"
-printf '\n\n'
 
-"${CMD[@]}" 2>&1 | tee "$LOG_FILE"
+# 激活 conda
+if [ -d "$CONDA_ENV_PATH" ]; then
+    source "${CONDA_ENV_PATH}/bin/activate"
+    conda activate "$CONDA_ENV_NAME" 2>/dev/null || true
+fi
+
+# 构建命令
+CMD="python $EVAL_SCRIPT --start \"$START\" --end \"$END\" --input_dir \"$INPUT_DIR\" \
+    --pretrained_dir \"$PRETRAINED_DIR\" --finetuned_dir \"$FINETUNED_DIR\" --finetuned_iter $FINETUNED_ITER \
+    --output_dir \"$OUTPUT_DIR\" --device $DEVICE --dtype $DTYPE --step_minutes $STEP_MINUTES \
+    --stats_path \"$STATS_PATH\" --min_valid_frames $MIN_VALID_FRAMES --min_valid_ratio $MIN_VALID_RATIO $NO_MASK_CHANNEL"
+[ -n "$MAX_SAMPLES" ] && CMD="$CMD --max_samples $MAX_SAMPLES"
+[ "$SAVE_PLOTS" = true ] && CMD="$CMD --save_plots --plot_samples $PLOT_SAMPLES"
+[ "$REPORT_BOTH_METRICS" = true ] && CMD="$CMD --report_both_metrics"
+
+echo ""
+echo "执行: $CMD"
+eval $CMD 2>&1 | tee "$LOG_FILE"
+
+if [ ${PIPESTATUS[0]} -eq 0 ]; then
+    echo ""
+    echo "=========================================="
+    echo "批量评估完成。输出: $OUTPUT_DIR  日志: $LOG_FILE"
+    echo "=========================================="
+else
+    echo ""
+    echo "=========================================="
+    echo "批量评估失败，请查看: $LOG_FILE"
+    echo "=========================================="
+    exit 1
+fi
