@@ -1,6 +1,6 @@
 # PRISMA
 
-![PRISMA framework overview](outputs/fig1_new.png)
+![PRISMA framework overview](assets/fig1_new.png)
 
 PRISMA is the project repository for sharing code related to our study,
 "A plug-and-play generative framework for multi-satellite precipitation
