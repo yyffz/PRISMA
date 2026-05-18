@@ -110,6 +110,34 @@ def _pick_closest_aspect_ratio(height, width):
     return best_key
 
 
+def _is_tensor_video_clip(clip):
+    if not torch.is_tensor(clip):
+        raise TypeError("clip should be Tensor. Got %s" % type(clip))
+    if not clip.ndimension() == 4:
+        raise ValueError("clip should be 4D. Got %dD" % clip.dim())
+    return True
+
+
+def to_tensor_video(clip):
+    """
+    Convert a uint8 video tensor in [T, C, H, W] format to float in [0, 1].
+    """
+    _is_tensor_video_clip(clip)
+    if clip.dtype != torch.uint8:
+        raise TypeError("clip tensor should have data type uint8. Got %s" % str(clip.dtype))
+    return clip.float() / 255.0
+
+
+class ToTensorVideo:
+    """Torchvision-style transform for video tensors in [T, C, H, W] format."""
+
+    def __call__(self, clip):
+        return to_tensor_video(clip)
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+
+
 def categorize_aspect_and_store(data_sample):
     """
     data_sample: a dict with 'video' shaped [C,T,H,W].

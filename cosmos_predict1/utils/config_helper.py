@@ -155,7 +155,7 @@ def import_all_modules_from_package(package_path: str, reload: bool = False, ski
 
     Example usage:
     ```python
-    import_all_modules_from_package("cosmos_predict1.diffusion.config.inference", reload=True, skip_underscore=False)
+    import_all_modules_from_package("cosmos_predict1.tokenizer_satellite.training.configs", reload=True, skip_underscore=False)
     ```
 
     Args:

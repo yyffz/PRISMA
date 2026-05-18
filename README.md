@@ -8,17 +8,14 @@ evaluation utilities.
 
 The satellite tokenizer fine-tuning and evaluation protocol follows the PRISMA
 study, "A plug-and-play generative framework for multi-satellite precipitation
-estimation" (arXiv:2605.14426): https://arxiv.org/abs/2605.14426. In particular,
-the AGRI tokenizer setup uses multi-channel FY-4B AGRI observations, optional
-observation masks, and reconstruction metrics computed on valid satellite
-observation regions.
+estimation" (arXiv:2605.14426): https://arxiv.org/abs/2605.14426.
 
 ## Project Overview
 
 The codebase is organized around three main workflows:
 
 - Satellite tokenizer fine-tuning from Cosmos-Tokenize1 checkpoints.
-- Batch tokenizer inference and reconstruction evaluation for AGRI satellite
+- Batch tokenizer inference and reconstruction evaluation for satellite
   observations.
 - Supporting preprocessing and visualization scripts for radar, nowcasting, and
   satellite data products.
@@ -27,9 +24,8 @@ Key files and directories:
 
 ```text
 cosmos_predict1/tokenizer_satellite/       Satellite tokenizer models, datasets, training, inference
-cosmos_predict1/tokenizer/                 Original Cosmos tokenizer implementation
-cosmos_predict1/autoregressive/            Cosmos autoregressive inference and training modules
-cosmos_predict1/diffusion/                 Cosmos diffusion inference and training modules
+cosmos_predict1/tokenizer/                 Original Cosmos tokenizer components used by training/evaluation
+cosmos_predict1/utils/                     Shared training utilities required by tokenizer workflows
 run_train_agri_tokenizer.sh                AGRI video tokenizer fine-tuning entry point
 run_train_agri_image_tokenizer.sh          AGRI image tokenizer fine-tuning entry point
 run_train_gmi_tokenizer.sh                 GMI tokenizer fine-tuning entry point
@@ -49,8 +45,6 @@ training dependencies. A conda environment file and pip requirements are
 provided.
 
 ```bash
-cd train_infer_eval_code
-
 conda env create --file cosmos-predict1.yaml
 conda activate cosmos-predict1
 
@@ -103,19 +97,6 @@ You can download Cosmos tokenizer checkpoints with:
 python -m scripts.download_tokenizer_checkpoints --checkpoint_dir checkpoints
 ```
 
-Large files should stay outside Git:
-
-```text
-datasets/
-checkpoints/
-logs/
-outputs/
-*.pt
-*.jit
-*.npy
-*.npz
-```
-
 ## Data Format
 
 The AGRI video tokenizer uses preprocessed NPZ files. The default format is:
@@ -139,7 +120,7 @@ Recommended baseline:
 - CUDA-capable NVIDIA GPU with recent drivers.
 - CUDA 12.x compatible PyTorch environment.
 - 1 x 80 GB GPU for conservative AGRI video tokenizer fine-tuning with
-  `batch_size=1` and `latent_channels=32`.
+  `batch_size=1`.
 - Multi-GPU training through `torchrun --nproc_per_node=<NUM_GPUS>` for larger
   batches or faster training.
 - At least 32 GB system RAM, with more recommended for large NPZ datasets and
@@ -172,7 +153,6 @@ bash run_train_agri_tokenizer.sh \
     --batch_size 1 \
     --learning_rate 5e-5 \
     --warmup_steps 10000 \
-    --latent_channels 32
 ```
 
 Resume from a checkpoint:
@@ -288,15 +268,11 @@ agri_tokenizer_region_summary.json      Global and per-channel summary
 reconstructions/*.npz                   Optional saved inputs, reconstructions, errors, masks
 ```
 
-The evaluator reports MAE, MSE, RMSE, and PSNR in the normalized `[-1, 1]`
-space. By default, metrics are computed only where `observation_mask=1`, and the
-mask channel is not included in reconstruction metrics.
-
-For the original Cosmos tokenizer inference example:
-
-```bash
-bash inference_Tokenizer.sh
-```
+The evaluator reports MAE, MSE, RMSE, and PSNR after converting the inputs and
+reconstructions back from normalized values to the original evaluation scale.
+Set `--data_range` to the corresponding value range when computing PSNR. By
+default, metrics are computed only where `observation_mask=1`, and the mask
+channel is not included in reconstruction metrics.
 
 ## Citation
 
